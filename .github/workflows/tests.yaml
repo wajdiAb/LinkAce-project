@@ -24,6 +24,20 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Run migrations
+        run: python manage.py migrate
+
+      - name: Start backend server
+        run: |
+          nohup python manage.py runserver 0.0.0.0:80 &
+          sleep 10 # Wait for the server to start
+      # - name: run app
+      #   run: |
+      #     source venv/bin/activate
+      #     ./scripts/start-linkace.sh
+      # - name: Wait for app to be ready
+      #   run: |
+      #     sleep 10 # Adjust the sleep time as necessary for your app to be ready
       - name: Run tests
         run: |
           source venv/bin/activate
