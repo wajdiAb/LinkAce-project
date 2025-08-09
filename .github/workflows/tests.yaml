@@ -57,6 +57,7 @@ jobs:
           APP_ENV=production
           APP_DEBUG=false
           APP_URL=http://localhost
+          APP_KEY=
 
           DB_CONNECTION=mysql
           DB_HOST=db
@@ -71,8 +72,9 @@ jobs:
           APPENV
 
           docker compose -f "$COMPOSE_FILE" cp .env.ci php:/app/.env
-          # Silence git “dubious ownership” inside container (composer post-scripts sometimes touch git)
+          # silence git warning inside the container
           docker compose -f "$COMPOSE_FILE" exec -T php git config --global --add safe.directory /app
+
 
       # 3) Install vendor, generate app key, wait for DB (from php side), migrate
       - name: Bootstrap app (composer + artisan)
@@ -87,33 +89,24 @@ jobs:
             echo "Waiting for php... ($i)"; sleep 2
           done
 
-          # Install deps
           docker compose -f "$COMPOSE_FILE" exec -T php composer install --no-interaction --prefer-dist --no-progress
 
-          # Make sure we are not using any stale cached config
+          # Clear config, make sure APP_KEY placeholder exists
           docker compose -f "$COMPOSE_FILE" exec -T php php artisan config:clear
+          docker compose -f "$COMPOSE_FILE" exec -T php sh -lc "grep -q '^APP_KEY=' .env || echo 'APP_KEY=' >> .env"
 
-          # Ensure .env exists (we already copied .env.ci → .env, but keep this safe)
-          docker compose -f "$COMPOSE_FILE" exec -T php sh -lc '[ -f .env ] || cp .env.example .env'
-
-          # Generate key, then clear config again so it’s picked up immediately
+          # Generate key and verify it's present
           docker compose -f "$COMPOSE_FILE" exec -T php php artisan key:generate --force
-          docker compose -f "$COMPOSE_FILE" exec -T php php artisan config:clear
+          docker compose -f "$COMPOSE_FILE" exec -T php sh -lc 'grep -n "^APP_KEY=" .env || (echo \"APP_KEY missing\"; exit 1)'
 
-          # Debug: confirm APP_KEY is present
-          docker compose -f "$COMPOSE_FILE" exec -T php sh -lc 'grep -n "^APP_KEY=" .env || true'
-
-          # Wait for DB from inside php container
+          # Wait for DB (from php container), then migrate
           for i in {1..60}; do
             docker compose -f "$COMPOSE_FILE" exec -T php php -r 'exit((int)!@fsockopen(getenv("DB_HOST") ?: "db", (int)(getenv("DB_PORT") ?: 3306)));' && break
             echo "Waiting for DB from php... ($i)"; sleep 2
           done
 
-          # Now run migrations (no caching yet)
           docker compose -f "$COMPOSE_FILE" exec -T php php artisan migrate --force
 
-          # Only after DB is ready & migrated, you can optimize/cache if you want
-          # docker compose -f "$COMPOSE_FILE" exec -T php php artisan optimize
 
 
       # 4) Create a CI user + generate an API token (non-interactive)
