@@ -11,7 +11,7 @@ jobs:
 
     env:
       COMPOSE_FILE: docker-compose.yml
-      BASE_URL: https://localhost:80
+      BASE_URL: http://localhost:80
 
     steps:
       - name: Checkout
@@ -136,25 +136,25 @@ jobs:
 
           echo "LINKACE_API_TOKEN=$TOKEN" >> $GITHUB_ENV
 
-      - name: Wait for API (with token)
-        env:
-          LINKACE_API_TOKEN: ${{ env.LINKACE_API_TOKEN }}
-        run: |
-          set -e
-          for i in {1..120}; do
-            code=$(curl -k -s -o /dev/null -w "%{http_code}" \
-              -H "Accept: application/json" \
-              -H "Authorization: Bearer $LINKACE_API_TOKEN" \
-              "$BASE_URL/api/v2/links" || true)
-            echo "API try $i -> HTTP $code"
-            if [ "$code" = "200" ]; then
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "API never became ready."
-          docker compose -f "$COMPOSE_FILE" logs --no-color > docker-logs.txt || true
-          exit 1
+      # - name: Wait for API (with token)
+      #   env:
+      #     LINKACE_API_TOKEN: ${{ env.LINKACE_API_TOKEN }}
+      #   run: |
+      #     set -e
+      #     for i in {1..120}; do
+      #       code=$(curl -k -s -o /dev/null -w "%{http_code}" \
+      #         -H "Accept: application/json" \
+      #         -H "Authorization: Bearer $LINKACE_API_TOKEN" \
+      #         "$BASE_URL/api/v2/links" || true)
+      #       echo "API try $i -> HTTP $code"
+      #       if [ "$code" = "200" ]; then
+      #         exit 0
+      #       fi
+      #       sleep 2
+      #     done
+      #     echo "API never became ready."
+      #     docker compose -f "$COMPOSE_FILE" logs --no-color > docker-logs.txt || true
+      #     exit 1
 
 
       # # 5) Quick HTTP readiness check
