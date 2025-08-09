@@ -34,11 +34,13 @@ jobs:
       - name: run app
         run: |
           source venv/bin/activate
+          RUN pecl install xdebug && docker-php-ext-enable xdebug
+          composer install --no-interaction --prefer-dist --optimize-autoloader
           ./scripts/start-linkace.sh
       - name: Wait for app to be ready
         run: |
           sleep 10 # Adjust the sleep time as necessary for your app to be ready
-          
+
       - name: Run tests
         run: |
           source venv/bin/activate
