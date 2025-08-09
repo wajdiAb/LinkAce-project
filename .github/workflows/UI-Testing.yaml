@@ -2,7 +2,7 @@
 name: Selenium UI Tests
 
 on: 
-  push:
+  pull_request:
     branches:
       - 2.x
   
