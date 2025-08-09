@@ -198,6 +198,6 @@ jobs:
           name: laravel-logs
           path: |
             laravel-logs
-        run: |
-          mkdir -p laravel-logs
-          docker compose -f "$COMPOSE_FILE" cp php:/app/storage/logs/ laravel-logs/ || true
+          run: |
+            mkdir -p laravel-logs
+            docker compose -f "$COMPOSE_FILE" cp php:/app/storage/logs/ laravel-logs/ || true
