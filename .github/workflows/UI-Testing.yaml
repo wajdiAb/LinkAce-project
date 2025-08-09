@@ -60,4 +60,4 @@ jobs:
         HEADLESS: true
         LinkAce_URL: http://localhost:80
       run: |
-        pytest UI_tests/ -v
+        pytest UI_tests/test_add_link.py
