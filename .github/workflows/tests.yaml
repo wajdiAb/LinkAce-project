@@ -9,13 +9,10 @@ jobs:
   api-tests:
     runs-on: ubuntu-latest
 
-    # You can override these via repo "Secrets and variables → Actions → Variables"
-    # or keep as-is and only set the token as a Secret.
     env:
-      # If your web proxy maps a different host port, change this (or set as a secret/variable)
-      BASE_URL: ${{ vars.BASE_URL || 'http://localhost:80' }}
-      # Which compose file to use. Change if yours lives elsewhere.
-      COMPOSE_FILE: ${{ vars.COMPOSE_FILE || 'docker-compose.yml' }}
+      # Adjust these if your filenames/ports differ:
+      COMPOSE_FILE: docker-compose.yml
+      BASE_URL: http://localhost:80
 
     steps:
       - name: Checkout
@@ -34,10 +31,40 @@ jobs:
 
       - name: Start LinkAce via Docker
         run: |
-          echo "Using compose file: $COMPOSE_FILE"
-          test -f "$COMPOSE_FILE" || (echo "Compose file not found!" && ls -la && exit 1)
+          echo "Using $COMPOSE_FILE"
+          test -f "$COMPOSE_FILE" || (echo "Compose file not found" && ls -la && exit 1)
           docker compose -f "$COMPOSE_FILE" up -d
           docker compose -f "$COMPOSE_FILE" ps
+
+      # 👇 This is the missing bit: install vendor/ and run Laravel setup IN the php container
+      - name: Bootstrap LinkAce (composer + artisan)
+        env:
+          COMPOSER_ALLOW_SUPERUSER: "1"
+        run: |
+          set -e
+          # sometimes the DB isn't ready instantly
+          for i in {1..30}; do
+            if docker compose -f "$COMPOSE_FILE" exec -T php php -v >/dev/null 2>&1; then
+              break
+            fi
+            echo "Waiting for php container... ($i)"
+            sleep 2
+          done
+
+          docker compose -f "$COMPOSE_FILE" exec -T php composer install --no-interaction --prefer-dist --no-progress
+
+          # Ensure .env exists and app key is set (safe to re-run)
+          docker compose -f "$COMPOSE_FILE" exec -T php sh -lc '[ -f .env ] || cp .env.example .env'
+          docker compose -f "$COMPOSE_FILE" exec -T php php artisan key:generate --force || true
+
+          # Run migrations
+          docker compose -f "$COMPOSE_FILE" exec -T php php artisan migrate --force
+
+          # Optional, but helps:
+          docker compose -f "$COMPOSE_FILE" exec -T php php artisan config:clear
+          docker compose -f "$COMPOSE_FILE" exec -T php php artisan cache:clear
+          docker compose -f "$COMPOSE_FILE" exec -T php php artisan route:clear
+          docker compose -f "$COMPOSE_FILE" exec -T php php artisan optimize
 
       - name: Wait for app to be ready (verbose)
         run: |
@@ -46,7 +73,6 @@ jobs:
             code=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/login" || true)
             echo "Try $i -> HTTP $code"
             if [ "$code" = "200" ]; then
-              echo "App is up."
               exit 0
             fi
             sleep 2
@@ -58,9 +84,8 @@ jobs:
       - name: Run API tests
         env:
           BASE_URL: ${{ env.BASE_URL }}
-          LINKACE_API_TOKEN: ${{ secrets.LINKACE_API_TOKEN }}   # REQUIRED: add in repo Settings → Secrets → Actions
+          LINKACE_API_TOKEN: ${{ secrets.LINKACE_API_TOKEN }}   # <-- set this in Repo Settings → Secrets → Actions
         run: |
-          # Point to your test file/folder; adjust if needed
           pytest tests_wajdi/test_links.py -q --maxfail=1 --disable-warnings
 
       - name: Upload docker logs on failure
