@@ -13,7 +13,6 @@ jobs:
       BASE_URL: http://localhost:80
       COMPOSE_FILE: docker-compose.yml
       HEADLESS: "true"
-      # Credentials your UI test can use (recommended: read these in your test code)
       LINKACE_EMAIL: ci@example.test
       LINKACE_PASSWORD: SuperSecret123!
 
@@ -25,15 +24,14 @@ jobs:
         with:
           fetch-depth: 1
 
-      # App repo: we spin up LinkAce locally
+      # App repo: boot LinkAce locally
       - name: Checkout LinkAce app repo
         uses: actions/checkout@v4
         with:
           repository: wajdiAb/LinkAce-project
           path: app
           fetch-depth: 1
-          # If private, keep this token. If public, you can remove it.
-          token: ${{ secrets.APP_REPO_TOKEN }}
+          token: ${{ secrets.UI_TESTING_GITHUB_TOKEN }}  # <-- your secret
 
       # --- Tooling -----------------------------------------------------------
       - name: Set up Python
@@ -151,9 +149,10 @@ jobs:
         run: |
           docker compose -f "$COMPOSE_FILE" exec -T php php artisan setup:complete --no-interaction || true
 
-      - name: Create UI test user (admin)
+      - name: Create UI test user(s)
         working-directory: app
         run: |
+          # main test user from env
           docker compose -f "$COMPOSE_FILE" exec -T php sh -lc '
             printf "ci-user\n${{ env.LINKACE_EMAIL }}\n${{ env.LINKACE_PASSWORD }}\n${{ env.LINKACE_PASSWORD }}\n" | php artisan registeruser --admin || true
           '
@@ -162,11 +161,10 @@ jobs:
             $u = User::where("email","${{ env.LINKACE_EMAIL }}")->first();
             if ($u && method_exists($u,"assignRole")) { $u->assignRole("admin"); }
           '
-
-          # If your test code still hard-codes different creds, uncomment this block:
-          # docker compose -f "$COMPOSE_FILE" exec -T php sh -lc '
-          #   printf "wagde.abo164@gmail.com\nwagde.abo164@gmail.com\npassword\npassword\n" | php artisan registeruser --admin || true
-          # '
+          # optional: if your test still uses hardcoded creds, also create them:
+          docker compose -f "$COMPOSE_FILE" exec -T php sh -lc '
+            printf "user\nwagde.abo164@gmail.com\npassword\npassword\n" | php artisan registeruser --admin || true
+          '
 
       - name: Wait for login page to be ready
         run: |
