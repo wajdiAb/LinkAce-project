@@ -54,7 +54,7 @@ jobs:
       - name: Copy Laravel .env into php container
         run: |
           cat > .env.ci <<'APPENV'
-          APP_ENV=production
+          APP_ENV=local            # <- was production; local avoids force-https
           APP_DEBUG=false
           APP_URL=http://localhost
           APP_KEY=
@@ -72,8 +72,8 @@ jobs:
           APPENV
 
           docker compose -f "$COMPOSE_FILE" cp .env.ci php:/app/.env
-          # silence git warning inside the container
           docker compose -f "$COMPOSE_FILE" exec -T php git config --global --add safe.directory /app
+
 
 
       # 3) Install vendor, generate app key, wait for DB (from php side), migrate
@@ -135,7 +135,7 @@ jobs:
           fi
 
           echo "LINKACE_API_TOKEN=$TOKEN" >> $GITHUB_ENV
-          
+
       - name: Wait for API (with token)
         env:
           LINKACE_API_TOKEN: ${{ env.LINKACE_API_TOKEN }}
