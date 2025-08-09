@@ -8,31 +8,34 @@ on:
 jobs:
   selenium-tests:
     runs-on: ubuntu-latest
+
     env:
       BASE_URL: http://localhost:80
       COMPOSE_FILE: docker-compose.yml
+      HEADLESS: "true"
+      # Credentials your UI test can use (recommended: read these in your test code)
       LINKACE_EMAIL: ci@example.test
       LINKACE_PASSWORD: SuperSecret123!
-      HEADLESS: "true"
 
     steps:
-      # UI tests repo (this repo)
+      # --- Repos -------------------------------------------------------------
+      # This repo: UI tests
       - name: Checkout UI repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # LinkAce app repo to boot the stack
-      - name: Checkout app repo
+      # App repo: we spin up LinkAce locally
+      - name: Checkout LinkAce app repo
         uses: actions/checkout@v4
         with:
           repository: wajdiAb/LinkAce-project
           path: app
           fetch-depth: 1
-          # If the app repo is private, add a secret and uncomment:
-          # token: ${{ secrets.APP_REPO_TOKEN }}
+          # If private, keep this token. If public, you can remove it.
+          token: ${{ secrets.APP_REPO_TOKEN }}
 
-      # Python & deps
+      # --- Tooling -----------------------------------------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -44,11 +47,10 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install pytest selenium webdriver-manager python-dotenv
 
-      # Chrome (use an action; don't apt-get)
       - name: Install Chrome
         uses: browser-actions/setup-chrome@v1
 
-      # ---- Boot LinkAce locally ----
+      # --- Boot LinkAce locally ---------------------------------------------
       - name: Write Compose .env (DB/Redis)
         working-directory: app
         run: |
@@ -73,6 +75,7 @@ jobs:
           cat > .env.ci <<'APPENV'
           APP_ENV=local
           APP_DEBUG=false
+          DEBUGBAR_ENABLED=false
           APP_URL=http://localhost
           APP_KEY=
 
@@ -96,7 +99,7 @@ jobs:
         working-directory: app
         run: |
           set -e
-          # wait until php is responsive
+          # wait for php container
           for i in {1..30}; do
             docker compose -f "$COMPOSE_FILE" exec -T php php -v >/dev/null 2>&1 && break
             echo "Waiting for php... ($i)"; sleep 2
@@ -108,11 +111,12 @@ jobs:
           docker compose -f "$COMPOSE_FILE" exec -T php sh -lc "grep -q '^APP_KEY=' .env || echo 'APP_KEY=' >> .env"
           docker compose -f "$COMPOSE_FILE" exec -T php php artisan key:generate --force
 
-          # wait for DB then migrate
+          # wait for DB from inside php container
           for i in {1..60}; do
             docker compose -f "$COMPOSE_FILE" exec -T php php -r 'exit((int)!@fsockopen(getenv("DB_HOST") ?: "db", (int)(getenv("DB_PORT") ?: 3306)));' && break
             echo "Waiting for DB from php... ($i)"; sleep 2
           done
+
           docker compose -f "$COMPOSE_FILE" exec -T php php artisan migrate --force
 
       - name: Fix Laravel writable dirs
@@ -126,17 +130,32 @@ jobs:
             find storage bootstrap/cache -type d -exec chmod 2775 {} \;
           '
 
-      - name: Mark setup complete & ensure mix manifest
+      - name: Patch Mix assets for CI (avoid 500 on views)
         working-directory: app
         run: |
-          docker compose -f "$COMPOSE_FILE" exec -T php php artisan setup:complete || true
-          docker compose -f "$COMPOSE_FILE" exec -T php sh -lc 'test -f public/mix-manifest.json || echo "{}" > public/mix-manifest.json'
+          docker compose -f "$COMPOSE_FILE" exec -T php sh -lc '
+            set -e
+            mkdir -p public/css public/js
+            [ -f public/css/app.css ] || echo "/* ci placeholder */" > public/css/app.css
+            [ -f public/js/app.js ]  || echo "// ci placeholder" > public/js/app.js
+            cat > public/mix-manifest.json <<JSON
+          {
+            "/css/app.css": "/css/app.css",
+            "/js/app.js": "/js/app.js"
+          }
+          JSON
+          '
+
+      - name: Mark setup complete
+        working-directory: app
+        run: |
+          docker compose -f "$COMPOSE_FILE" exec -T php php artisan setup:complete --no-interaction || true
 
       - name: Create UI test user (admin)
         working-directory: app
         run: |
           docker compose -f "$COMPOSE_FILE" exec -T php sh -lc '
-            printf "ci-user\n${{ env.LINKACE_EMAIL }}\n${{ env.LINKACE_PASSWORD }}\n${{ env.LINKACE_PASSWORD }}\n" | php artisan registeruser --admin
+            printf "ci-user\n${{ env.LINKACE_EMAIL }}\n${{ env.LINKACE_PASSWORD }}\n${{ env.LINKACE_PASSWORD }}\n" | php artisan registeruser --admin || true
           '
           docker compose -f "$COMPOSE_FILE" exec -T php php artisan tinker --execute '
             use App\Models\User;
@@ -144,10 +163,15 @@ jobs:
             if ($u && method_exists($u,"assignRole")) { $u->assignRole("admin"); }
           '
 
+          # If your test code still hard-codes different creds, uncomment this block:
+          # docker compose -f "$COMPOSE_FILE" exec -T php sh -lc '
+          #   printf "wagde.abo164@gmail.com\nwagde.abo164@gmail.com\npassword\npassword\n" | php artisan registeruser --admin || true
+          # '
+
       - name: Wait for login page to be ready
         run: |
           set -e
-          for i in {1..120}; do
+          for i in {1..180}; do
             code=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/login" || true)
             echo "Try $i -> HTTP $code"
             if [ "$code" = "200" ] || [ "$code" = "302" ]; then exit 0; fi
@@ -156,7 +180,7 @@ jobs:
           echo "App never became ready."
           exit 1
 
-      # ---- Run Selenium tests ----
+      # --- Run Selenium tests -----------------------------------------------
       - name: Run Selenium tests (headless)
         env:
           LinkAce_URL: ${{ env.BASE_URL }}
@@ -166,7 +190,7 @@ jobs:
         run: |
           pytest UI_tests/test_add_link.py -v --maxfail=1 --disable-warnings
 
-      # ---- Diagnostics on failure ----
+      # --- Diagnostics on failure -------------------------------------------
       - name: Docker logs (on failure)
         if: failure()
         working-directory: app
