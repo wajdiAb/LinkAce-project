@@ -124,51 +124,55 @@ jobs:
           '
 
       # 4) Create a CI user + generate an API token (non-interactive)
-      - name: Create CI user and token
+      - name: Create CI admin user and token
         id: make_token
         run: |
           set -e
-          # Create a user via the interactive command by piping answers
-          # Prompts: username, email, password, confirm (works for LinkAce v2) :contentReference[oaicite:0]{index=0}
+          # Create admin user non-interactively
           docker compose -f "$COMPOSE_FILE" exec -T php sh -lc '
-            printf "ci-user\nci@example.test\nSuperSecret123!\nSuperSecret123!\n" | php artisan registeruser
+            printf "ci-user\nci@example.test\nSuperSecret123!\nSuperSecret123!\n" | php artisan registeruser --admin
           '
 
-          # Generate a Sanctum token via tinker and print ONLY the token
+          # Ensure the user has the admin role (spatie/permission)
+          docker compose -f "$COMPOSE_FILE" exec -T php php artisan tinker --execute '
+            use App\Models\User;
+            $u = User::where("email","ci@example.test")->first();
+            if ($u && method_exists($u, "assignRole")) { $u->assignRole("admin"); }
+          '
+
+          # Safety: ensure mix-manifest exists so setup views don’t 500
+          docker compose -f "$COMPOSE_FILE" exec -T php sh -lc 'test -f public/mix-manifest.json || echo "{}" > public/mix-manifest.json'
+
+          # Create API token
           TOKEN=$(docker compose -f "$COMPOSE_FILE" exec -T php php artisan tinker --execute '
             use App\Models\User;
-            use Illuminate\Support\Facades\Hash;
             $u = User::where("email","ci@example.test")->first();
-            if (!$u) { echo "NOUSER"; exit(1); }
-            echo $u->createToken("ci")->plainTextToken;
-          ' | tr -d '\r')
+            echo $u ? $u->createToken("ci")->plainTextToken : "";
+          ' | tr -d "\r")
+
           echo "token-length=${#TOKEN}"
-
-          if [ -z "$TOKEN" ] || [ "$TOKEN" = "NOUSER" ]; then
-            echo "Failed to create token"; exit 1
-          fi
-
+          [ -n "$TOKEN" ] || (echo "Failed to create token"; exit 1)
           echo "LINKACE_API_TOKEN=$TOKEN" >> $GITHUB_ENV
 
-      # - name: Wait for API (with token)
-      #   env:
-      #     LINKACE_API_TOKEN: ${{ env.LINKACE_API_TOKEN }}
-      #   run: |
-      #     set -e
-      #     for i in {1..120}; do
-      #       code=$(curl -k -s -o /dev/null -w "%{http_code}" \
-      #         -H "Accept: application/json" \
-      #         -H "Authorization: Bearer $LINKACE_API_TOKEN" \
-      #         "$BASE_URL/api/v2/links" || true)
-      #       echo "API try $i -> HTTP $code"
-      #       if [ "$code" = "200" ]; then
-      #         exit 0
-      #       fi
-      #       sleep 2
-      #     done
-      #     echo "API never became ready."
-      #     docker compose -f "$COMPOSE_FILE" logs --no-color > docker-logs.txt || true
-      #     exit 1
+      - name: Wait for API (with token)
+        env:
+          LINKACE_API_TOKEN: ${{ env.LINKACE_API_TOKEN }}
+        run: |
+          set -e
+          for i in {1..120}; do
+            code=$(curl  -s -o /dev/null -w "%{http_code}" \
+              -H "Accept: application/json" \
+              -H "Authorization: Bearer $LINKACE_API_TOKEN" \
+              "$BASE_URL/api/v2/links" || true)
+            echo "API try $i -> HTTP $code"
+            if [ "$code" = "200" ]; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "API never became ready."
+          docker compose -f "$COMPOSE_FILE" logs --no-color > docker-logs.txt || true
+          exit 1
 
 
       # # 5) Quick HTTP readiness check
@@ -203,15 +207,22 @@ jobs:
         if: failure()
         run: |
           docker compose -f "$COMPOSE_FILE" exec -T php sh -lc 'ls -lah storage/logs || true'
-          docker compose -f "$COMPOSE_FILE" exec -T php sh -lc 'tail -n 200 storage/logs/laravel.log || true'
+          # tail the newest laravel-*.log if it exists
+          docker compose -f "$COMPOSE_FILE" exec -T php sh -lc '
+            LATEST=$(ls -t storage/logs/laravel-*.log 2>/dev/null | head -n1 || true);
+            if [ -n "$LATEST" ]; then echo "Tailing $LATEST"; tail -n 200 "$LATEST"; else echo "No laravel-*.log found"; fi
+          '
+
+      - name: Collect Laravel logs (on failure)
+        if: failure()
+        run: |
+          mkdir -p laravel-logs
+          # copy the whole logs dir (ignore errors if empty)
+          docker compose -f "$COMPOSE_FILE" cp php:/app/storage/logs/ laravel-logs/ || true
 
       - name: Upload Laravel logs (artifact)
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: laravel-logs
-          path: |
-            laravel-logs
-          run: |
-            mkdir -p laravel-logs
-            docker compose -f "$COMPOSE_FILE" cp php:/app/storage/logs/ laravel-logs/ || true
+          path: laravel-logs
