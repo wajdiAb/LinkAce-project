@@ -1,6 +1,10 @@
 ---
 name: linkace_dev
 services:
+  redis:
+    image: bitnami/redis:latest
+    environment:
+      - ALLOW_EMPTY_PASSWORD=yes
 
   # --- MariaDB
   db:
@@ -50,12 +54,12 @@ services:
       - ./resources/docker/Caddyfile:/etc/caddy/Caddyfile:ro
 
   # --- Redis
-  redis:
-    image: docker.io/bitnami/redis:7.4
-    environment:
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
-    ports:
-      - "127.0.0.1:6379:6379"
+  # redis:
+  #   image: docker.io/bitnami/redis:7.4
+  #   environment:
+  #     - REDIS_PASSWORD=${REDIS_PASSWORD}
+  #   ports:
+  #     - "127.0.0.1:6379:6379"
 
   # --- Buggregator
   buggregator:

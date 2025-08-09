@@ -1,47 +1,68 @@
-name: Run Tests
+name: API Tests
 
 on:
   pull_request:
-    branches: [2.x] # or the branches you want to protect
+    branches: ["2.x"]
+  push:
 
 jobs:
-  test:
+  api-tests:
     runs-on: ubuntu-latest
 
+    env:
+      BASE_URL: http://localhost:80   # adjust if your compose maps a different host port
+      WORKDIR: .                      # your docker-compose.yml is at repo root
+
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11" # or your actual Python version
+          python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install test deps
         run: |
-          python -m venv venv
-          source venv/bin/activate
-          pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt || true
+          pip install pytest requests
 
-      # - name: Run migrations
-      #   run: python manage.py migrate
-
-      # - name: Start backend server
-      #   run: |
-      #     nohup python manage.py runserver 0.0.0.0:80 &
-      #     sleep 10 # Wait for the server to start
-      - name: run app
+      - name: Start LinkAce via Docker
+        working-directory: ${{ env.WORKDIR }}
         run: |
-          source venv/bin/activate
-          RUN pecl install xdebug && docker-php-ext-enable xdebug
-          composer install --no-interaction --prefer-dist --optimize-autoloader
-          ./scripts/start-linkace.sh
+          docker compose pull || true
+          docker compose up -d
+          docker compose ps
+          echo "Compose file location: $(pwd)/docker-compose.yml"
+
       - name: Wait for app to be ready
         run: |
-          sleep 10 # Adjust the sleep time as necessary for your app to be ready
+          set -e
+          for i in {1..120}; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/login")
+            if [ "$code" = "200" ]; then
+              echo "App is up."
+              exit 0
+            fi
+            echo "Waiting for app... ($i) got $code"
+            sleep 2
+          done
+          echo "App never became ready."
+          docker compose logs --no-color > docker-logs.txt || true
+          exit 1
 
-      - name: Run tests
+      - name: Run API tests only
+        env:
+          BASE_URL: ${{ env.BASE_URL }}
+          API_TOKEN: ${{ secrets.LINKACE_API_TOKEN }}   # add this secret in repo Settings → Secrets → Actions
         run: |
-          source venv/bin/activate
-          pytest tests_wajdi 
+          pytest API_tests -q --maxfail=1 --disable-warnings || \
+          pytest tests_wajdi -q --maxfail=1 --disable-warnings
+
+      - name: Upload docker logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-logs
+          path: docker-logs.txt

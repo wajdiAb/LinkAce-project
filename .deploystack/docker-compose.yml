@@ -25,6 +25,11 @@ services:
     volumes:
       - ./backups:/app/storage/app/backups
       - linkace_logs:/app/storage/logs
+  
+  # redis:
+  #   image: bitnami/redis:latest
+  #   environment:
+  #     - ALLOW_EMPTY_PASSWORD=yes
 
 volumes:
   linkace_logs:
