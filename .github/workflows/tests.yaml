@@ -184,3 +184,7 @@ jobs:
         with:
           name: docker-logs
           path: docker-logs.txt
+
+      - name: Print Laravel error log on failure
+        if: failure()
+        run: docker compose -f "$COMPOSE_FILE" exec -T php cat storage/logs/laravel.log || true
