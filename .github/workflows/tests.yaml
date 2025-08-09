@@ -10,7 +10,6 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # Adjust these if your filenames/ports differ:
       COMPOSE_FILE: docker-compose.yml
       BASE_URL: http://localhost:80
 
@@ -29,6 +28,21 @@ jobs:
           pip install -r requirements.txt || true
           pip install pytest requests python-dotenv
 
+      # 1) Compose reads .env by default: give it DB/Redis creds so services come up sane
+      - name: Write Docker Compose .env for CI
+        run: |
+          cat > .env <<'ENVVARS'
+          # Used by docker-compose.yml (not the Laravel app)
+          DB_HOST=db
+          DB_PORT=3306
+          DB_DATABASE=linkace
+          DB_USERNAME=linkace
+          DB_PASSWORD=linkace
+
+          REDIS_PASSWORD=redispass
+          ENVVARS
+          echo "Wrote $(pwd)/.env"
+
       - name: Start LinkAce via Docker
         run: |
           echo "Using $COMPOSE_FILE"
@@ -36,45 +50,93 @@ jobs:
           docker compose -f "$COMPOSE_FILE" up -d
           docker compose -f "$COMPOSE_FILE" ps
 
-      # 👇 This is the missing bit: install vendor/ and run Laravel setup IN the php container
-      - name: Bootstrap LinkAce (composer + artisan)
+      # 2) Put a Laravel .env into the php container with matching DB settings
+      - name: Copy Laravel .env into php container
+        run: |
+          cat > .env.ci <<'APPENV'
+          APP_ENV=production
+          APP_DEBUG=false
+          APP_URL=http://localhost
+
+          DB_CONNECTION=mysql
+          DB_HOST=db
+          DB_PORT=3306
+          DB_DATABASE=linkace
+          DB_USERNAME=linkace
+          DB_PASSWORD=linkace
+
+          CACHE_DRIVER=file
+          SESSION_DRIVER=file
+          QUEUE_CONNECTION=sync
+          APPENV
+
+          docker compose -f "$COMPOSE_FILE" cp .env.ci php:/app/.env
+          # Silence git “dubious ownership” inside container (composer post-scripts sometimes touch git)
+          docker compose -f "$COMPOSE_FILE" exec -T php git config --global --add safe.directory /app
+
+      # 3) Install vendor, generate app key, wait for DB (from php side), migrate
+      - name: Bootstrap app (composer + artisan)
         env:
           COMPOSER_ALLOW_SUPERUSER: "1"
         run: |
           set -e
-          # sometimes the DB isn't ready instantly
+
+          # Wait until php container is ready to run commands
           for i in {1..30}; do
-            if docker compose -f "$COMPOSE_FILE" exec -T php php -v >/dev/null 2>&1; then
-              break
-            fi
-            echo "Waiting for php container... ($i)"
-            sleep 2
+            docker compose -f "$COMPOSE_FILE" exec -T php php -v >/dev/null 2>&1 && break
+            echo "Waiting for php... ($i)"; sleep 2
           done
 
           docker compose -f "$COMPOSE_FILE" exec -T php composer install --no-interaction --prefer-dist --no-progress
-
-          # Ensure .env exists and app key is set (safe to re-run)
-          docker compose -f "$COMPOSE_FILE" exec -T php sh -lc '[ -f .env ] || cp .env.example .env'
           docker compose -f "$COMPOSE_FILE" exec -T php php artisan key:generate --force || true
 
-          # Run migrations
+          # Wait for DB to be reachable *from php container* (DNS + port)
+          for i in {1..60}; do
+            docker compose -f "$COMPOSE_FILE" exec -T php php -r 'exit((int)!@fsockopen(getenv("DB_HOST") ?: "db", (int)(getenv("DB_PORT") ?: 3306)));'
+            rc=$?
+            if [ $rc -eq 0 ]; then
+              echo "DB reachable."; break
+            fi
+            echo "Waiting for DB from php... ($i)"; sleep 2
+          done
+
           docker compose -f "$COMPOSE_FILE" exec -T php php artisan migrate --force
 
-          # Optional, but helps:
-          docker compose -f "$COMPOSE_FILE" exec -T php php artisan config:clear
-          docker compose -f "$COMPOSE_FILE" exec -T php php artisan cache:clear
-          docker compose -f "$COMPOSE_FILE" exec -T php php artisan route:clear
-          docker compose -f "$COMPOSE_FILE" exec -T php php artisan optimize
+      # 4) Create a CI user + generate an API token (non-interactive)
+      - name: Create CI user and token
+        id: make_token
+        run: |
+          set -e
+          # Create a user via the interactive command by piping answers
+          # Prompts: username, email, password, confirm (works for LinkAce v2) :contentReference[oaicite:0]{index=0}
+          docker compose -f "$COMPOSE_FILE" exec -T php sh -lc '
+            printf "ci-user\nci@example.test\nSuperSecret123!\nSuperSecret123!\n" | php artisan registeruser
+          '
 
-      - name: Wait for app to be ready (verbose)
+          # Generate a Sanctum token via tinker and print ONLY the token
+          TOKEN=$(docker compose -f "$COMPOSE_FILE" exec -T php php artisan tinker --execute '
+            use App\Models\User;
+            use Illuminate\Support\Facades\Hash;
+            $u = User::where("email","ci@example.test")->first();
+            if (!$u) { echo "NOUSER"; exit(1); }
+            echo $u->createToken("ci")->plainTextToken;
+          ' | tr -d '\r')
+          echo "token-length=${#TOKEN}"
+
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "NOUSER" ]; then
+            echo "Failed to create token"; exit 1
+          fi
+
+          echo "LINKACE_API_TOKEN=$TOKEN" >> $GITHUB_ENV
+
+      # 5) Quick HTTP readiness check
+      - name: Wait for HTTP
         run: |
           set -e
           for i in {1..120}; do
             code=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/login" || true)
             echo "Try $i -> HTTP $code"
-            if [ "$code" = "200" ]; then
-              exit 0
-            fi
+            [ "$code" = "200" ] && exit 0
             sleep 2
           done
           echo "App never became ready."
@@ -84,7 +146,7 @@ jobs:
       - name: Run API tests
         env:
           BASE_URL: ${{ env.BASE_URL }}
-          LINKACE_API_TOKEN: ${{ secrets.LINKACE_API_TOKEN }}   # <-- set this in Repo Settings → Secrets → Actions
+          LINKACE_API_TOKEN: ${{ env.LINKACE_API_TOKEN }}
         run: |
           pytest tests_wajdi/test_links.py -q --maxfail=1 --disable-warnings
 
