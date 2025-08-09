@@ -20,6 +20,7 @@ def auth_headers():
         "Accept": "application/json",
         "Authorization": f"Bearer {API_TOKEN}",
         "Content-Type": "application/json",
+        "X-Forwarded-Proto": "https",
     }
 
 def get_payload(obj):
