@@ -11,7 +11,7 @@ jobs:
 
     env:
       COMPOSE_FILE: docker-compose.yml
-      BASE_URL: http://localhost:80
+      BASE_URL: https://localhost:80
 
     steps:
       - name: Checkout
@@ -142,7 +142,7 @@ jobs:
         run: |
           set -e
           for i in {1..120}; do
-            code=$(curl -s -o /dev/null -w "%{http_code}" \
+            code=$(curl -k -s -o /dev/null -w "%{http_code}" \
               -H "Accept: application/json" \
               -H "Authorization: Bearer $LINKACE_API_TOKEN" \
               "$BASE_URL/api/v2/links" || true)
