@@ -81,26 +81,40 @@ jobs:
         run: |
           set -e
 
-          # Wait until php container is ready to run commands
+          # Wait until php container is ready
           for i in {1..30}; do
             docker compose -f "$COMPOSE_FILE" exec -T php php -v >/dev/null 2>&1 && break
             echo "Waiting for php... ($i)"; sleep 2
           done
 
+          # Install deps
           docker compose -f "$COMPOSE_FILE" exec -T php composer install --no-interaction --prefer-dist --no-progress
-          docker compose -f "$COMPOSE_FILE" exec -T php php artisan key:generate --force || true
 
-          # Wait for DB to be reachable *from php container* (DNS + port)
+          # Make sure we are not using any stale cached config
+          docker compose -f "$COMPOSE_FILE" exec -T php php artisan config:clear
+
+          # Ensure .env exists (we already copied .env.ci → .env, but keep this safe)
+          docker compose -f "$COMPOSE_FILE" exec -T php sh -lc '[ -f .env ] || cp .env.example .env'
+
+          # Generate key, then clear config again so it’s picked up immediately
+          docker compose -f "$COMPOSE_FILE" exec -T php php artisan key:generate --force
+          docker compose -f "$COMPOSE_FILE" exec -T php php artisan config:clear
+
+          # Debug: confirm APP_KEY is present
+          docker compose -f "$COMPOSE_FILE" exec -T php sh -lc 'grep -n "^APP_KEY=" .env || true'
+
+          # Wait for DB from inside php container
           for i in {1..60}; do
-            docker compose -f "$COMPOSE_FILE" exec -T php php -r 'exit((int)!@fsockopen(getenv("DB_HOST") ?: "db", (int)(getenv("DB_PORT") ?: 3306)));'
-            rc=$?
-            if [ $rc -eq 0 ]; then
-              echo "DB reachable."; break
-            fi
+            docker compose -f "$COMPOSE_FILE" exec -T php php -r 'exit((int)!@fsockopen(getenv("DB_HOST") ?: "db", (int)(getenv("DB_PORT") ?: 3306)));' && break
             echo "Waiting for DB from php... ($i)"; sleep 2
           done
 
+          # Now run migrations (no caching yet)
           docker compose -f "$COMPOSE_FILE" exec -T php php artisan migrate --force
+
+          # Only after DB is ready & migrated, you can optimize/cache if you want
+          # docker compose -f "$COMPOSE_FILE" exec -T php php artisan optimize
+
 
       # 4) Create a CI user + generate an API token (non-interactive)
       - name: Create CI user and token
