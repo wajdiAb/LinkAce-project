@@ -107,7 +107,21 @@ jobs:
 
           docker compose -f "$COMPOSE_FILE" exec -T php php artisan migrate --force
 
-
+      - name: Fix Laravel writable dirs (storage & cache)
+        run: |
+          # fix perms as root inside the php container
+          docker compose -f "$COMPOSE_FILE" exec -u root -T php sh -lc '
+            set -e
+            mkdir -p storage/logs storage/framework/{cache,sessions,views,testing} bootstrap/cache
+            # prefer www-data; if your image uses a different user, swap it here
+            chown -R www-data:www-data storage bootstrap/cache || chown -R www-data:www-data /app/storage /app/bootstrap/cache || true
+            # group-writable + setgid so new files stay group-owned
+            chmod -R ug+rwX storage bootstrap/cache
+            find storage bootstrap/cache -type d -exec chmod 2775 {} \;
+            # last-resort fallback if the image user differs
+            ls -ld storage storage/logs storage/framework bootstrap/cache
+            id
+          '
 
       # 4) Create a CI user + generate an API token (non-interactive)
       - name: Create CI user and token
