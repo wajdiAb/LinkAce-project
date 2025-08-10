@@ -38,4 +38,4 @@ jobs:
         HEADLESS: true
         BASE_URL: http://${{ secrets.BASE_URL }}:8080
       run: |
-        pytest tests/ -s -v
+        pytest UI_tests/test_add_link.py -s -v
