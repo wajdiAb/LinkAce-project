@@ -2,211 +2,40 @@ name: Selenium UI Tests
 
 on:
   pull_request:
-    branches: [ "2.x" ]
+    branches:
+     - 2.x
   workflow_dispatch:
 
 jobs:
   selenium-tests:
     runs-on: ubuntu-latest
 
-    env:
-      BASE_URL: http://localhost:80
-      COMPOSE_FILE: docker-compose.yml
-      HEADLESS: "true"
-      LINKACE_EMAIL: ci@example.test
-      LINKACE_PASSWORD: SuperSecret123!
-
     steps:
-      # --- Repos -------------------------------------------------------------
-      # This repo: UI tests
-      - name: Checkout UI repo
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+        repository: wajdiAb/LinkAce-UI-testing
+        token: ${{ secrets.UI_TESTING_GITHUB_TOKEN }}
 
-      # App repo: boot LinkAce locally
-      - name: Checkout LinkAce app repo
-        uses: actions/checkout@v4
-        with:
-          repository: wajdiAb/LinkAce-project
-          path: app
-          fetch-depth: 1
-          token: ${{ secrets.UI_TESTING_GITHUB_TOKEN }}  # <-- your secret
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.13'
 
-      # --- Tooling -----------------------------------------------------------
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
 
-      - name: Install test deps
-        run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install pytest selenium webdriver-manager python-dotenv
+    - name: Install Chrome and ChromeDriver
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y google-chrome-stable
 
-      - name: Install Chrome
-        uses: browser-actions/setup-chrome@v1
-
-      # --- Boot LinkAce locally ---------------------------------------------
-      - name: Write Compose .env (DB/Redis)
-        working-directory: app
-        run: |
-          cat > .env <<'ENVVARS'
-          DB_HOST=db
-          DB_PORT=3306
-          DB_DATABASE=linkace
-          DB_USERNAME=linkace
-          DB_PASSWORD=linkace
-          REDIS_PASSWORD=redispass
-          ENVVARS
-
-      - name: Start LinkAce via Docker
-        working-directory: app
-        run: |
-          docker compose -f "$COMPOSE_FILE" up -d
-          docker compose -f "$COMPOSE_FILE" ps
-
-      - name: Put Laravel .env into php container
-        working-directory: app
-        run: |
-          cat > .env.ci <<'APPENV'
-          APP_ENV=local
-          APP_DEBUG=false
-          DEBUGBAR_ENABLED=false
-          APP_URL=http://localhost
-          APP_KEY=
-
-          DB_CONNECTION=mysql
-          DB_HOST=db
-          DB_PORT=3306
-          DB_DATABASE=linkace
-          DB_USERNAME=linkace
-          DB_PASSWORD=linkace
-
-          CACHE_DRIVER=file
-          SESSION_DRIVER=file
-          QUEUE_CONNECTION=sync
-          APPENV
-          docker compose -f "$COMPOSE_FILE" cp .env.ci php:/app/.env
-          docker compose -f "$COMPOSE_FILE" exec -T php git config --global --add safe.directory /app
-
-      - name: Bootstrap app (composer + artisan)
-        env:
-          COMPOSER_ALLOW_SUPERUSER: "1"
-        working-directory: app
-        run: |
-          set -e
-          # wait for php container
-          for i in {1..30}; do
-            docker compose -f "$COMPOSE_FILE" exec -T php php -v >/dev/null 2>&1 && break
-            echo "Waiting for php... ($i)"; sleep 2
-          done
-
-          docker compose -f "$COMPOSE_FILE" exec -T php composer install --no-interaction --prefer-dist --no-progress
-
-          docker compose -f "$COMPOSE_FILE" exec -T php php artisan config:clear
-          docker compose -f "$COMPOSE_FILE" exec -T php sh -lc "grep -q '^APP_KEY=' .env || echo 'APP_KEY=' >> .env"
-          docker compose -f "$COMPOSE_FILE" exec -T php php artisan key:generate --force
-
-          # wait for DB from inside php container
-          for i in {1..60}; do
-            docker compose -f "$COMPOSE_FILE" exec -T php php -r 'exit((int)!@fsockopen(getenv("DB_HOST") ?: "db", (int)(getenv("DB_PORT") ?: 3306)));' && break
-            echo "Waiting for DB from php... ($i)"; sleep 2
-          done
-
-          docker compose -f "$COMPOSE_FILE" exec -T php php artisan migrate --force
-
-      - name: Fix Laravel writable dirs
-        working-directory: app
-        run: |
-          docker compose -f "$COMPOSE_FILE" exec -u root -T php sh -lc '
-            set -e
-            mkdir -p storage/logs storage/framework/{cache,sessions,views,testing} bootstrap/cache
-            chown -R www-data:www-data storage bootstrap/cache || true
-            chmod -R ug+rwX storage bootstrap/cache
-            find storage bootstrap/cache -type d -exec chmod 2775 {} \;
-          '
-
-      - name: Patch Mix assets for CI (avoid 500 on views)
-        working-directory: app
-        run: |
-          docker compose -f "$COMPOSE_FILE" exec -T php sh -lc '
-            set -e
-            mkdir -p public/css public/js
-            [ -f public/css/app.css ] || echo "/* ci placeholder */" > public/css/app.css
-            [ -f public/js/app.js ]  || echo "// ci placeholder" > public/js/app.js
-            cat > public/mix-manifest.json <<JSON
-          {
-            "/css/app.css": "/css/app.css",
-            "/js/app.js": "/js/app.js"
-          }
-          JSON
-          '
-
-      - name: Mark setup complete
-        working-directory: app
-        run: |
-          docker compose -f "$COMPOSE_FILE" exec -T php php artisan setup:complete --no-interaction || true
-
-      - name: Create UI test user(s)
-        working-directory: app
-        run: |
-          # main test user from env
-          docker compose -f "$COMPOSE_FILE" exec -T php sh -lc '
-            printf "ci-user\n${{ env.LINKACE_EMAIL }}\n${{ env.LINKACE_PASSWORD }}\n${{ env.LINKACE_PASSWORD }}\n" | php artisan registeruser --admin || true
-          '
-          docker compose -f "$COMPOSE_FILE" exec -T php php artisan tinker --execute '
-            use App\Models\User;
-            $u = User::where("email","${{ env.LINKACE_EMAIL }}")->first();
-            if ($u && method_exists($u,"assignRole")) { $u->assignRole("admin"); }
-          '
-          # optional: if your test still uses hardcoded creds, also create them:
-          docker compose -f "$COMPOSE_FILE" exec -T php sh -lc '
-            printf "user\nwagde.abo164@gmail.com\npassword\npassword\n" | php artisan registeruser --admin || true
-          '
-
-      - name: Wait for login page to be ready
-        run: |
-          set -e
-          for i in {1..180}; do
-            code=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/login" || true)
-            echo "Try $i -> HTTP $code"
-            if [ "$code" = "200" ] || [ "$code" = "302" ]; then exit 0; fi
-            sleep 2
-          done
-          echo "App never became ready."
-          exit 1
-
-      # --- Run Selenium tests -----------------------------------------------
-      - name: Run Selenium tests (headless)
-        env:
-          LinkAce_URL: ${{ env.BASE_URL }}
-          LINKACE_EMAIL: ${{ env.LINKACE_EMAIL }}
-          LINKACE_PASSWORD: ${{ env.LINKACE_PASSWORD }}
-          HEADLESS: ${{ env.HEADLESS }}
-        run: |
-          pytest UI_tests/test_add_link.py -v --maxfail=1 --disable-warnings
-
-      # --- Diagnostics on failure -------------------------------------------
-      - name: Docker logs (on failure)
-        if: failure()
-        working-directory: app
-        run: docker compose -f "$COMPOSE_FILE" logs --no-color > docker-logs.txt || true
-
-      - name: Upload docker logs (on failure)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: docker-logs
-          path: app/docker-logs.txt
-
-      - name: Upload screenshots (on failure)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ui-screenshots
-          path: |
-            screenshots
-            reports
-          if-no-files-found: ignore
+    - name: Run Selenium tests
+      env:
+        HEADLESS: true
+        BASE_URL: http://${{ secrets.BASE_URL }}:8080
+      run: |
+        pytest tests/ -s -v
