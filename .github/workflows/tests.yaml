@@ -11,8 +11,10 @@ jobs:
 
     env:
       COMPOSE_FILE: docker-compose.yml
-      BASE_URL: http://http://54.229.201.227:8080
-      
+      BASE_URL: http://54.229.201.227:8080
+      LINKACE_API_TOKEN: 1|7qOS33x19g25JNwT2ucc7A3JpvlnUeTetHVE4Q7s34b9a707
+
+
 
     steps:
       - name: Checkout
