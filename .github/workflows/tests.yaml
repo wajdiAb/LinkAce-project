@@ -11,8 +11,8 @@ jobs:
 
     env:
       COMPOSE_FILE: docker-compose.yml
-      BASE_URL: http://54.229.201.227:8080
-      LINKACE_API_TOKEN: 1|r5EKcIdjbN0vo0BfQdwGTdqGyeOWsTR03q1TLr5e164f7e37
+      BASE_URL: http://${{ secrets.BASE_URL }}:8080
+      LINKACE_API_TOKEN: ${{ secrets.LINKACE_API_TOKEN_EC2 }}
 
 
 
