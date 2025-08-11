@@ -38,5 +38,7 @@ jobs:
       env:
         HEADLESS: true
         LINKACE_URL: http://${{ secrets.BASE_URL }}:8080
+        LINKACE_EMAIL: ${{ secrets.EMAIL }}
+        LINKACE_PASSWORD: ${{ secrets.PASSWORD }}
       run: |
         pytest UI_tests/test_add_link.py -s -v
