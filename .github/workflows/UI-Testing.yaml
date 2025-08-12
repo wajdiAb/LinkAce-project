@@ -41,4 +41,4 @@ jobs:
         LINKACE_EMAIL: ${{ secrets.EMAIL }}
         LINKACE_PASSWORD: ${{ secrets.PASSWORD }}
       run: |
-        pytest UI_tests/test_add_link.py -s -v
+        pytest UI_tests/* -s -v

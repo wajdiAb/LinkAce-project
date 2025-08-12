@@ -83,6 +83,14 @@ def test_invalid_token():
     print("Invalid-token:", r.status_code, r.text)
     assert r.status_code in (401, 403)
 
+def test_create_link_missing_url_returns_4xx():
+    # Missing required "url" should be rejected
+    r = requests.post(api(), json={"title": "No URL"}, headers=auth_headers())
+    print("Create missing url:", r.status_code, r.text)
+    # LinkAce typically returns 422 for validation errors; allow 400 just in case
+    assert r.status_code in (400, 422)
+    
+
 
 
 
