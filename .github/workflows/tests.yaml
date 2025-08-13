@@ -11,7 +11,10 @@ jobs:
 
     env:
       COMPOSE_FILE: docker-compose.yml
-      BASE_URL: http://localhost:80   # caddy maps 80 -> php
+      BASE_URL: http://${{ secrets.BASE_URL }}:8080
+      LINKACE_API_TOKEN: ${{ secrets.LINKACE_API_TOKEN_EC2 }}
+
+
 
     steps:
       - name: Checkout
@@ -27,149 +30,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt || true
           pip install pytest requests python-dotenv
-
-      # Compose reads .env by default — feed DB creds it expects
-      - name: Write Docker Compose .env for CI
-        run: |
-          cat > .env <<'ENVVARS'
-          DB_HOST=db
-          DB_PORT=3306
-          DB_DATABASE=linkace
-          DB_USERNAME=linkace
-          DB_PASSWORD=linkace
-          REDIS_PASSWORD=redispass
-          ENVVARS
-          echo "Wrote $(pwd)/.env"
-
-      - name: Start LinkAce via Docker
-        run: |
-          echo "Using $COMPOSE_FILE"
-          test -f "$COMPOSE_FILE" || (echo "Compose file not found" && ls -la && exit 1)
-          docker compose -f "$COMPOSE_FILE" up -d
-          docker compose -f "$COMPOSE_FILE" ps
-
-      # Put a Laravel .env **inside** the php container
-      - name: Copy Laravel .env into php container
-        run: |
-          cat > .env.ci <<'APPENV'
-          APP_ENV=local
-          APP_DEBUG=true
-          APP_URL=http://localhost
-          APP_KEY=
-
-          DB_CONNECTION=mysql
-          DB_HOST=db
-          DB_PORT=3306
-          DB_DATABASE=linkace
-          DB_USERNAME=linkace
-          DB_PASSWORD=linkace
-
-          CACHE_DRIVER=file
-          SESSION_DRIVER=file
-          QUEUE_CONNECTION=sync
-          APPENV
-
-          docker compose -f "$COMPOSE_FILE" cp .env.ci php:/app/.env
-          docker compose -f "$COMPOSE_FILE" exec -T php git config --global --add safe.directory /app
-
-      # Install vendors, generate APP_KEY, wait for DB, migrate
-      - name: Bootstrap app (composer + artisan)
-        env:
-          COMPOSER_ALLOW_SUPERUSER: "1"
-        run: |
-          set -e
-
-          # wait until php container can run php
-          for i in {1..30}; do
-            docker compose -f "$COMPOSE_FILE" exec -T php php -v >/dev/null 2>&1 && break
-            echo "Waiting for php... ($i)"; sleep 2
-          done
-
-          docker compose -f "$COMPOSE_FILE" exec -T php composer install --no-interaction --prefer-dist --no-progress
-
-          docker compose -f "$COMPOSE_FILE" exec -T php php artisan config:clear
-          docker compose -f "$COMPOSE_FILE" exec -T php sh -lc "grep -q '^APP_KEY=' .env || echo 'APP_KEY=' >> .env"
-          docker compose -f "$COMPOSE_FILE" exec -T php php artisan key:generate --force
-          docker compose -f "$COMPOSE_FILE" exec -T php php artisan config:clear
-          docker compose -f "$COMPOSE_FILE" exec -T php sh -lc 'grep -n "^APP_KEY=" .env || (echo "APP_KEY missing"; exit 1)'
-
-          # wait for DB from inside php, then migrate
-          for i in {1..60}; do
-            docker compose -f "$COMPOSE_FILE" exec -T php php -r 'exit((int)!@fsockopen(getenv("DB_HOST") ?: "db", (int)(getenv("DB_PORT") ?: 3306)));' && break
-            echo "Waiting for DB from php... ($i)"; sleep 2
-          done
-          docker compose -f "$COMPOSE_FILE" exec -T php php artisan migrate --force
-
-      # Laravel needs these writable
-      - name: Fix Laravel writable dirs (storage & cache)
-        run: |
-          docker compose -f "$COMPOSE_FILE" exec -u root -T php sh -lc '
-            set -e
-            mkdir -p storage/logs storage/framework/{cache,sessions,views,testing} bootstrap/cache
-            chown -R www-data:www-data storage bootstrap/cache || true
-            chmod -R ug+rwX storage bootstrap/cache
-            find storage bootstrap/cache -type d -exec chmod 2775 {} \;
-          '
-
-      # Mark setup finished so middleware stops redirecting to /setup
-      - name: Mark setup complete (CLI)
-        run: |
-          # If the command doesn't exist in your LinkAce version, this won't fail the build
-          docker compose -f "$COMPOSE_FILE" exec -T php php artisan setup:complete || true
-          # safety: ensure mix-manifest exists (prevents view 500s in setup screens)
-          docker compose -f "$COMPOSE_FILE" exec -T php sh -lc 'test -f public/mix-manifest.json || echo "{}" > public/mix-manifest.json'
-
-      # Create admin + token for API auth
-      - name: Create CI admin user and token
-        id: make_token
-        run: |
-          set -e
-          docker compose -f "$COMPOSE_FILE" exec -T php sh -lc '
-            printf "ci-user\nci@example.test\nSuperSecret123!\nSuperSecret123!\n" | php artisan registeruser --admin
-          '
-          docker compose -f "$COMPOSE_FILE" exec -T php php artisan tinker --execute '
-            use App\Models\User;
-            $u = User::where("email","ci@example.test")->first();
-            if ($u && method_exists($u,"assignRole")) { $u->assignRole("admin"); }
-          '
-          TOKEN=$(docker compose -f "$COMPOSE_FILE" exec -T php php artisan tinker --execute '
-            use App\Models\User;
-            $u = User::where("email","ci@example.test")->first();
-            echo $u ? $u->createToken("ci")->plainTextToken : "";
-          ' | tr -d "\r")
-          echo "token-length=${#TOKEN}"
-          [ -n "$TOKEN" ] || (echo "Failed to create token"; exit 1)
-          echo "LINKACE_API_TOKEN=$TOKEN" >> $GITHUB_ENV
-
-      # Optional: show where we'd be redirected if anything still intercepts API
-      - name: Debug API redirect (once)
-        env:
-          LINKACE_API_TOKEN: ${{ env.LINKACE_API_TOKEN }}
-        run: |
-          curl -s -I \
-            -H "Accept: application/json" \
-            -H "Authorization: Bearer $LINKACE_API_TOKEN" \
-            "$BASE_URL/api/v2/links" | sed -n '1,30p'
-
-      # Wait until /api/v2/links responds 200 with the token
-      - name: Wait for API (with token)
-        env:
-          LINKACE_API_TOKEN: ${{ env.LINKACE_API_TOKEN }}
-        run: |
-          set -e
-          for i in {1..120}; do
-            code=$(curl -s -o /dev/null -w "%{http_code}" \
-              -H "Accept: application/json" \
-              -H "Authorization: Bearer $LINKACE_API_TOKEN" \
-              -H "X-Forwarded-Proto: https" \
-              "$BASE_URL/api/v2/links" || true)
-            echo "API try $i -> HTTP $code"
-            if [ "$code" = "200" ]; then exit 0; fi
-            sleep 2
-          done
-          echo "API never became ready."
-          docker compose -f "$COMPOSE_FILE" logs --no-color > docker-logs.txt || true
-          exit 1
+ 
 
       - name: Run API tests
         env:
@@ -177,33 +38,3 @@ jobs:
           LINKACE_API_TOKEN: ${{ env.LINKACE_API_TOKEN }}
         run: |
           pytest tests_wajdi/test_links.py -q --maxfail=1 --disable-warnings
-
-      # --- Diagnostics on failure ---
-      - name: Upload docker logs on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: docker-logs
-          path: docker-logs.txt
-
-      - name: Show Laravel log (on failure)
-        if: failure()
-        run: |
-          docker compose -f "$COMPOSE_FILE" exec -T php sh -lc 'ls -lah storage/logs || true'
-          docker compose -f "$COMPOSE_FILE" exec -T php sh -lc '
-            LATEST=$(ls -t storage/logs/laravel-*.log 2>/dev/null | head -n1 || true);
-            if [ -n "$LATEST" ]; then echo "Tailing $LATEST"; tail -n 200 "$LATEST"; else echo "No laravel-*.log found"; fi
-          '
-
-      - name: Collect & Upload Laravel logs (artifact)
-        if: failure()
-        run: |
-          mkdir -p laravel-logs
-          docker compose -f "$COMPOSE_FILE" cp php:/app/storage/logs/ laravel-logs/ || true
-        shell: bash
-      - name: Upload Laravel logs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: laravel-logs
-          path: laravel-logs

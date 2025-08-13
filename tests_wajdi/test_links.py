@@ -7,7 +7,7 @@ from urllib.parse import urljoin
 from dotenv import load_dotenv; load_dotenv()
 
 
-BASE_URL = os.getenv("BASE_URL", "http://localhost:80").rstrip("/")
+BASE_URL = os.getenv("BASE_URL").rstrip("/")
 API_TOKEN = os.getenv("LINKACE_API_TOKEN") or os.getenv("API_TOKEN")
 
 def api(path=""):
@@ -20,7 +20,6 @@ def auth_headers():
         "Accept": "application/json",
         "Authorization": f"Bearer {API_TOKEN}",
         "Content-Type": "application/json",
-        "X-Forwarded-Proto": "https",
     }
 
 def get_payload(obj):
@@ -30,6 +29,7 @@ def get_payload(obj):
     return obj
 
 def test_get_links():
+    
     r = requests.get(api(), headers=auth_headers())
     print(r.status_code, r.text)
     assert r.status_code == 200
@@ -41,6 +41,7 @@ def test_get_links():
         assert isinstance(data["data"], list)
 
 def test_create_link():
+    print(f'{BASE_URL}')
     unique_url = f"https://example.com/?q={uuid.uuid4()}"
     payload = {"url": unique_url, "title": "Example Website"}
 
@@ -81,6 +82,14 @@ def test_invalid_token():
     r = requests.get(api(), headers={"Accept": "application/json", "Authorization": "Bearer bad"})
     print("Invalid-token:", r.status_code, r.text)
     assert r.status_code in (401, 403)
+
+def test_create_link_missing_url_returns_4xx():
+    # Missing required "url" should be rejected
+    r = requests.post(api(), json={"title": "No URL"}, headers=auth_headers())
+    print("Create missing url:", r.status_code, r.text)
+    # LinkAce typically returns 422 for validation errors; allow 400 just in case
+    assert r.status_code in (400, 422)
+    
 
 
 
