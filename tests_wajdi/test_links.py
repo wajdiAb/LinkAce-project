@@ -5,8 +5,7 @@ import requests
 from urllib.parse import urljoin
 
 from dotenv import load_dotenv; load_dotenv()
-
-
+# fsddf
 BASE_URL = os.getenv("BASE_URL").rstrip("/")
 API_TOKEN = os.getenv("LINKACE_API_TOKEN") or os.getenv("API_TOKEN")
 
@@ -59,7 +58,7 @@ def test_create_link():
 
 def test_delete_link():
     # create
-    unique_url = f"https://example.com/?q={uuid.uuid4()}"
+    unique_url = f"https://example2.com/?q={uuid.uuid4()}"
     create = requests.post(
         api(), json={"url": unique_url, "title": "Delete Test"}, headers=auth_headers()
     )
@@ -89,7 +88,7 @@ def test_create_link_missing_url_returns_4xx():
     print("Create missing url:", r.status_code, r.text)
     # LinkAce typically returns 422 for validation errors; allow 400 just in case
     assert r.status_code in (400, 422)
-    
+
 
 
 
