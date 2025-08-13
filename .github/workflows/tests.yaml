@@ -1,5 +1,5 @@
 name: LinkAce API Tests
-
+# fg
 on:
   push:
   pull_request:
@@ -37,4 +37,4 @@ jobs:
           BASE_URL: ${{ env.BASE_URL }}
           LINKACE_API_TOKEN: ${{ env.LINKACE_API_TOKEN }}
         run: |
-          pytest tests_wajdi/test_links.py -q --maxfail=1 --disable-warnings
+          pytest API_tests/* -q --maxfail=1 --disable-warnings
