@@ -38,7 +38,7 @@ def test_get_links():
     if isinstance(data, dict):
         assert "data" in data
         assert isinstance(data["data"], list)
-
+# 
 def test_create_link():
     print(f'{BASE_URL}')
     unique_url = f"https://example.com/?q={uuid.uuid4()}"
